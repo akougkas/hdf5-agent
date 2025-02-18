@@ -313,8 +313,34 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> Optional[str]:
             return list_groups(params.file_path)
         elif tool_name == "list_datasets":
             params = ListDatasetsParameters(**parameters)
-            # Execute list_datasets logic
-            pass
+            try:
+                if not os.path.exists(params.file_path):
+                    return f"[red]Error: File {params.file_path} not found[/red]"
+
+                with h5py.File(params.file_path, 'r') as f:
+                    if params.group_path not in f:
+                        return f"[red]Error: Group {params.group_path} not found in {params.file_path}[/red]"
+
+                    datasets = []
+                    def visitor(name, obj):
+                        if isinstance(obj, h5py.Dataset):
+                            datasets.append(name)
+
+                    f[params.group_path].visititems(visitor)
+
+                    if not datasets:
+                        return "No datasets found in the specified group."
+
+                    # Format output
+                    output = f"[bold cyan]Datasets in {params.group_path} of {os.path.basename(params.file_path)}:[/bold cyan]\n"
+                    for dataset in datasets:
+                        # Get relative path for display
+                        relative_path = dataset.replace(params.group_path, '').lstrip('/')
+                        output += f"[green]•[/green] [cyan]{relative_path}[/cyan]\n"
+                    return output
+
+            except Exception as e:
+                return f"[red]Error listing datasets: {str(e)}[/red]"
         else:
             console.print(f"[red]Unknown tool: {tool_name}[/red]")
             return None
