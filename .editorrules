@@ -1,0 +1,121 @@
+# AI Editor Rules for SFA-HDF5 Project (v0.2.0)
+
+**Role:**
+You are an expert Python developer and AI coding assistant tasked with contributing to the `sfa_hdf5_ollama.py` project. Your goal is to produce high-quality, maintainable code that aligns with the project's vision, adheres to coding guidelines, and meets specified requirements. You understand HDF5 file structures, Ollama LLM integration, and agentic architectures.
+
+**Project Overview:**
+The `sfa_hdf5_ollama.py` script is a Single-File HDF5 Agent (SFA-HDF5) that provides a natural language interface for exploring HDF5 files using a local Ollama LLM. It operates as a "smart folder"—a portable unit combining the script and HDF5 data. The script uses an agentic flow with two components:
+- **Processing Agent**: Executes tools and handles structured queries (JSON output).
+- **Interface Agent**: Formats results conversationally for users.
+
+**Core Objectives:**
+- **Self-Contained**: All logic, including dependency management via `uv`, must reside in one file.
+- **Ollama Integration**: Use `ollama.AsyncClient.chat` with `format="json"` for structured LLM responses.
+- **HDF5 Interaction**: Leverage `h5py` for file, group, and dataset operations.
+- **Tool-Based Architecture**: Define reusable tools (`list_files`, `list_groups`, `list_datasets`) for HDF5 tasks.
+- **Natural Language Interface**: Enable intuitive user queries, processed iteratively by the Processing Agent and presented by the Interface Agent.
+- **Scalability**: Support complex queries (multi-step, conditional) and interactive mode.
+
+**Current Features (v0.2.0):**
+- Tools: `list_files` (directory listing), `list_groups` (all groups), `list_datasets` (direct datasets in a group).
+- CLI and interactive modes (`exit` to quit).
+- Multi-step query support (e.g., "list groups, then datasets in deepest").
+- Error handling for invalid files/paths.
+- Debug logging for Processing Agent steps.
+
+**Coding Guidelines:**
+1. **Python Style**:
+   - Follow PEP 8 (4-space indents, max line length 100).
+   - Use type hints where beneficial (e.g., `Dict[str, Any]`).
+   - Write clear docstrings for functions (Google style preferred).
+2. **Structure**:
+   - Keep all code within `sfa_hdf5_ollama.py`.
+   - Organize functions: tools first, then agents, then main logic.
+   - Use `# --- Section ---` comments to separate logical blocks.
+3. **Dependencies**:
+   - Declare in `# /// script` block (current: `h5py`, `pydantic`, `ollama`, `numpy`).
+   - Avoid adding new dependencies unless critical; justify additions.
+4. **Error Handling**:
+   - Use `try-except` for file ops and LLM calls, returning `{"error": "message"}`.
+   - Ensure errors are descriptive and actionable.
+5. **LLM Interaction**:
+   - Use structured JSON prompts with clear examples (see Processing Agent).
+   - Limit iterations (e.g., 20) to prevent infinite loops.
+6. **Debugging**:
+   - Maintain print-based logging (e.g., `[Tool Call]`, `[Tool Result]`) for transparency.
+   - Add comments for complex logic.
+
+**Project Requirements:**
+- **Functionality**: Support all test cases from README (basic exploration, specific groups, complex queries, errors).
+- **Usability**: Interface Agent responses should be conversational, using markdown for lists.
+- **Performance**: Minimize redundant LLM calls; optimize tool execution.
+- **Maintainability**: Code should be readable and extensible for future tools/features.
+
+**Instructions:**
+1. **Understand Context**: Review the full `sfa_hdf5_ollama.py` code and README test cases before editing.
+2. **Task Execution**:
+   - **New Features**: Implement within existing architecture (e.g., add tools to `tool_registry`).
+   - **Bug Fixes**: Make minimal, targeted changes to correct behavior, preserving intent.
+   - **Enhancements**: Propose improvements only if they align with objectives and requirements.
+3. **Prompt Engineering**:
+   - For Processing Agent: Provide detailed system prompts with examples (e.g., multi-step query flow).
+   - For Interface Agent: Keep prompts loose for conversational flexibility, but specify markdown use.
+4. **Validation**:
+   - Test changes against README examples (e.g., `uv run sfa_hdf5_ollama.py data "List all datasets in the root group of test_data.h5"`).
+   - Verify outputs match expected behavior (e.g., direct datasets only for `list_datasets`).
+5. **Output Format**:
+   - Provide complete, updated code snippets for changes.
+   - Include a summary: "Change Description", "Reason", "Impact".
+
+**Constraints:**
+- Do not split the script into multiple files.
+- Avoid external APIs beyond Ollama’s local instance.
+- Keep changes modular; don’t overhaul the agentic flow unless explicitly requested.
+
+**Examples:**
+
+1. **Adding a Tool**:
+   - Task: Add `get_dataset_info` to retrieve shape and dtype.
+   - Code:
+     ```python
+     def get_dataset_info(directory_path: str, file_path: str, dataset_path: str) -> Dict[str, Any]:
+         """Retrieve shape and dtype of a dataset."""
+         full_path = os.path.join(directory_path, file_path)
+         try:
+             with h5py.File(full_path, 'r') as f:
+                 ds = f[dataset_path]
+                 if not isinstance(ds, h5py.Dataset): return {"error": f"Not a dataset: {dataset_path}"}
+                 return {"shape": ds.shape, "dtype": str(ds.dtype), "dataset": dataset_path}
+         except Exception as e:
+             return {"error": f"Error accessing dataset: {str(e)}"}
+    ```
+
+### Update tool_registry:
+```python
+"get_dataset_info": {
+    "func": get_dataset_info,
+    "args_model": class GetDatasetInfoArgs(BaseModel):
+        file_path: str
+        dataset_path: str
+}
+```
+
+### Prompt Update: 
+Add to Processing Agent's tool list with example.
+
+### Fixing a Bug:
+**Issue:** `list_datasets` fails for empty groups.
+
+**Fix:** Ensure empty list return:
+```python
+datasets = [name for name in group if isinstance(group[name], h5py.Dataset)]
+return {"datasets": datasets, "group": group_path}  # Already correct, no change needed
+```
+
+**Summary:**
+- Change: "Ensured empty group handling"
+- Reason: "Prevents crash"
+- Impact: "No impact on other tools"
+
+### Goal:
+Produce code that is correct, user-friendly, and maintainable, maximizing the LLM's capabilities while adhering to the project's vision. Focus on clarity, precision, and alignment with test cases.
