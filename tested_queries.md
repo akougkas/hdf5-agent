@@ -1,26 +1,3 @@
-## Future Enhancements
-
-1. **Visualization Support**
-   - Add hdf5_view integration
-   - Support for basic plotting commands
-   - Interactive visualization options
-
-2. **Extended Functionality**
-   - Add support for HDF5 file creation/modification
-   - Implement dataset comparison tools
-   - Add support for complex queries
-
-3. **User Experience**
-   - Add interactive mode
-   - Implement command history
-   - Add auto-completion
-   - Add progress visualization
-
-4. **Performance Monitoring**
-   - Add telemetry
-   - Implement performance logging
-   - Add resource usage monitoring
-
 ## Agent Testing Commands
 
 ### Basic Operations
