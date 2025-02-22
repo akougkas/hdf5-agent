@@ -53,38 +53,27 @@ uv run sfa_hdf5_ollama.py data "What datasets are available in the /measurements
 ### Complex Queries
 6. Multi-step exploration:
 ```bash
-uv run sfa_hdf5_ollama.py data "First show me all groups in test_data.h5, then list the datasets in the deepest group"
+uv run grok_sfa_hdf5_ollama.py data "First show me all groups in test_data.h5, then list the datasets in the deepest group"
 ```
 
 7. Conditional exploration:
 ```bash
-uv run sfa_hdf5_ollama.py data "Find all groups in test_data.h5 that contain datasets"
+uv run grok_sfa_hdf5_ollama.py data "Find all groups in test_data.h5 that contain datasets"
 ```
 
 ### Error Handling
 8. Invalid file:
 ```bash
-uv run sfa_hdf5_ollama.py data "Show me the contents of nonexistent.h5"
+uv run grok_sfa_hdf5_ollama.py data "Show me the contents of nonexistent.h5"
 ```
 
 9. Invalid group path:
 ```bash
-uv run sfa_hdf5_ollama.py data "List datasets in /not/a/real/path within test_data.h5"
+uv run grok_sfa_hdf5_ollama.py data "List datasets in /not/a/real/path within test_data.h5"
 ```
 
 10. Complex error case:
 ```bash
-uv run sfa_hdf5_ollama.py data "First list groups in nonexistent.h5, then show datasets in test_data.h5"
+uv run grok_sfa_hdf5_ollama.py data "First list groups in nonexistent.h5, then show datasets in test_data.h5"
 ```
 
-These test cases progressively evaluate:
-- Basic file and group listing
-- Nested group navigation
-- Dataset discovery
-- Multi-step operations
-- Error handling
-- Complex query processing
-- Response formatting
-- Tool selection logic
-
-Results from these tests will inform the prioritization of improvements in Phase 1 implementation.
