@@ -34,7 +34,8 @@ License: MIT
 #     "h5py>=3.8.0,<3.9.0",
 #     "pydantic>=2.4.2,<3.0.0",
 #     "ollama~=0.4.7",
-#     "numpy>=1.24.0,<2.0.0"
+#     "numpy>=1.24.0,<2.0.0",
+#     "rich>=13.7.0,<14.0.0"
 # ]
 # requires-python = ">=3.8,<3.13"
 # ///
@@ -46,13 +47,26 @@ import os
 import json
 import ollama
 from pydantic import BaseModel, Field, ValidationError
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
 import argparse
 import sys
 from functools import lru_cache
+import time
+import numpy as np
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.console import Console
 
-DEFAULT_MODEL = "granite3.1-dense:latest"  # Default Ollama model
+DEFAULT_MODEL = "phi4:latest"  # Default Ollama model
 CACHE_SIZE = 128  # Configurable cache size for LRU caching
+MAX_SLICE_SIZE = 1_000_000  # Max elements to read (~4MB for float32), adjustable
+METRICS = {
+    "tool_calls": {},
+    "llm_calls": 0,
+    "llm_time": 0.0,
+    "token_count": 0
+}
+HISTORY = []  # Store command history for interactive mode
+console = Console()
 
 # --- Pydantic Models for Tool Arguments ---
 class ListGroupsArgs(BaseModel):
@@ -75,102 +89,268 @@ class GetDatasetInfoArgs(BaseModel):
     file_path: str = Field(..., description="Relative path to the HDF5 file")
     dataset_path: str = Field(..., description="Path to the dataset within the file")
 
-# --- Tool Functions ---
+class ReadDatasetDataArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+    dataset_path: str = Field(..., description="Path to the dataset within the file")
+    slice_start: Optional[List[int]] = Field(None, description="Start indices for slicing (e.g., [0] or [0, 0])")
+    slice_end: Optional[List[int]] = Field(None, description="End indices for slicing (e.g., [10] or [5, 5])")
+
+class ListAllDatasetsArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+
+class GetFileMetadataArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+
+# --- Tool Functions with Timing ---
 def list_files(directory_path: str) -> Dict[str, Any]:
     """List all HDF5 files in the specified directory."""
+    start_time = time.time()
     dir_path = Path(directory_path)
     if not dir_path.is_dir():
-        return {"error": f"Invalid directory: {directory_path}"}
-    files = [f.name for f in dir_path.glob("*.h5") if h5py.is_hdf5(f)]
-    if not files:
-        return {"error": "No HDF5 files found in the directory"}
-    return {"files": files, "directory": str(directory_path)}
+        result = {"error": f"Invalid directory: {directory_path}"}
+    else:
+        files = [f.name for f in dir_path.glob("*.h5") if h5py.is_hdf5(f)]
+        result = {"files": files, "directory": str(directory_path)} if files else {"error": "No HDF5 files found in the directory"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["list_files"] = METRICS["tool_calls"].get("list_files", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["list_files"]["count"] += 1
+    METRICS["tool_calls"]["list_files"]["time"] += duration
+    return result
 
 def list_groups(directory_path: str, file_path: str) -> Dict[str, Any]:
     """List all groups in the specified HDF5 file."""
+    start_time = time.time()
     full_path = os.path.join(directory_path, file_path)
     if not os.path.exists(full_path):
-        return {"error": f"File not found: {file_path}"}
-    try:
-        with h5py.File(full_path, 'r') as f:
-            groups = []
-            f.visit(lambda name: groups.append(name) if isinstance(f[name], h5py.Group) else None)
-            return {"groups": groups, "file": file_path}
-    except Exception as e:
-        return {"error": f"Error listing groups: {str(e)}"}
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                groups = []
+                f.visit(lambda name: groups.append(name) if isinstance(f[name], h5py.Group) else None)
+                result = {"groups": groups, "file": file_path}
+        except Exception as e:
+            result = {"error": f"Error listing groups: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["list_groups"] = METRICS["tool_calls"].get("list_groups", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["list_groups"]["count"] += 1
+    METRICS["tool_calls"]["list_groups"]["time"] += duration
+    return result
 
 def list_datasets(directory_path: str, file_path: str, group_path: str) -> Dict[str, Any]:
     """List all datasets in the specified group within an HDF5 file."""
+    start_time = time.time()
     full_path = os.path.join(directory_path, file_path)
     if not os.path.exists(full_path):
-        return {"error": f"File not found: {file_path}"}
-    try:
-        with h5py.File(full_path, 'r') as f:
-            if group_path not in f:
-                return {"error": f"Group not found: {group_path}"}
-            datasets = []
-            f[group_path].visit(lambda name: datasets.append(name) if isinstance(f[group_path][name], h5py.Dataset) else None)
-            return {"datasets": datasets, "group": group_path}
-    except Exception as e:
-        return {"error": f"Error listing datasets: {str(e)}"}
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if group_path not in f:
+                    result = {"error": f"Group not found: {group_path}"}
+                else:
+                    datasets = []
+                    f[group_path].visit(lambda name: datasets.append(f"{group_path}/{name}" if group_path != '/' else name) if isinstance(f[group_path][name], h5py.Dataset) else None)
+                    result = {"datasets": datasets, "group": group_path}
+        except Exception as e:
+            result = {"error": f"Error listing datasets: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["list_datasets"] = METRICS["tool_calls"].get("list_datasets", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["list_datasets"]["count"] += 1
+    METRICS["tool_calls"]["list_datasets"]["time"] += duration
+    return result
 
 @lru_cache(maxsize=CACHE_SIZE)
 def get_group_attribute(directory_path: str, file_path: str, group_path: str, attribute_name: str) -> Dict[str, Any]:
     """Retrieve the value of a specific attribute of a group."""
+    start_time = time.time()
     full_path = os.path.join(directory_path, file_path)
     if not os.path.exists(full_path):
-        return {"error": f"File not found: {file_path}"}
-    try:
-        with h5py.File(full_path, 'r') as f:
-            if group_path not in f:
-                return {"error": f"Group not found: {group_path}"}
-            group = f[group_path]
-            if not isinstance(group, h5py.Group):
-                return {"error": f"Not a group: {group_path}"}
-            if attribute_name not in group.attrs:
-                return {"error": f"Attribute '{attribute_name}' not found in group '{group_path}'"}
-            value = group.attrs[attribute_name]
-            return {"attribute": attribute_name, "value": str(value), "group": group_path}
-    except Exception as e:
-        return {"error": f"Error retrieving group attribute: {str(e)}"}
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if group_path not in f:
+                    result = {"error": f"Group not found: {group_path}"}
+                elif not isinstance(f[group_path], h5py.Group):
+                    result = {"error": f"Not a group: {group_path}"}
+                elif attribute_name not in f[group_path].attrs:
+                    result = {"error": f"Attribute '{attribute_name}' not found in group '{group_path}'"}
+                else:
+                    value = f[group_path].attrs[attribute_name]
+                    result = {"attribute": attribute_name, "value": str(value), "group": group_path}
+        except Exception as e:
+            result = {"error": f"Error retrieving group attribute: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["get_group_attribute"] = METRICS["tool_calls"].get("get_group_attribute", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["get_group_attribute"]["count"] += 1
+    METRICS["tool_calls"]["get_group_attribute"]["time"] += duration
+    return result
 
 @lru_cache(maxsize=CACHE_SIZE)
 def get_file_attribute(directory_path: str, file_path: str, attribute_name: str) -> Dict[str, Any]:
     """Retrieve the value of a specific attribute of the HDF5 file."""
+    start_time = time.time()
     full_path = os.path.join(directory_path, file_path)
     if not os.path.exists(full_path):
-        return {"error": f"File not found: {file_path}"}
-    try:
-        with h5py.File(full_path, 'r') as f:
-            if attribute_name not in f.attrs:
-                return {"error": f"Attribute '{attribute_name}' not found in file '{file_path}'"}
-            value = f.attrs[attribute_name]
-            return {"attribute": attribute_name, "value": str(value), "file": file_path}
-    except Exception as e:
-        return {"error": f"Error retrieving file attribute: {str(e)}"}
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if attribute_name not in f.attrs:
+                    result = {"error": f"Attribute '{attribute_name}' not found in file '{file_path}'"}
+                else:
+                    value = f.attrs[attribute_name]
+                    result = {"attribute": attribute_name, "value": str(value), "file": file_path}
+        except Exception as e:
+            result = {"error": f"Error retrieving file attribute: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["get_file_attribute"] = METRICS["tool_calls"].get("get_file_attribute", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["get_file_attribute"]["count"] += 1
+    METRICS["tool_calls"]["get_file_attribute"]["time"] += duration
+    return result
 
 @lru_cache(maxsize=CACHE_SIZE)
 def get_dataset_info(directory_path: str, file_path: str, dataset_path: str) -> Dict[str, Any]:
     """Retrieve metadata about a specific dataset (shape, dtype, attributes)."""
+    start_time = time.time()
     full_path = os.path.join(directory_path, file_path)
     if not os.path.exists(full_path):
-        return {"error": f"File not found: {file_path}"}
-    try:
-        with h5py.File(full_path, 'r') as f:
-            if dataset_path not in f:
-                return {"error": f"Dataset not found: {dataset_path}"}
-            ds = f[dataset_path]
-            if not isinstance(ds, h5py.Dataset):
-                return {"error": f"Not a dataset: {dataset_path}"}
-            attrs = dict(ds.attrs.items())
-            return {
-                "dataset": dataset_path,
-                "shape": list(ds.shape),
-                "dtype": str(ds.dtype),
-                "attributes": {k: str(v) for k, v in attrs.items()}
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if dataset_path not in f:
+                    result = {"error": f"Dataset not found: {dataset_path}"}
+                elif not isinstance(f[dataset_path], h5py.Dataset):
+                    result = {"error": f"Not a dataset: {dataset_path}"}
+                else:
+                    ds = f[dataset_path]
+                    attrs = dict(ds.attrs.items())
+                    result = {
+                        "dataset": dataset_path,
+                        "shape": list(ds.shape),
+                        "dtype": str(ds.dtype),
+                        "attributes": {k: str(v) for k, v in attrs.items()}
+                    }
+        except Exception as e:
+            result = {"error": f"Error retrieving dataset info: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["get_dataset_info"] = METRICS["tool_calls"].get("get_dataset_info", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["get_dataset_info"]["count"] += 1
+    METRICS["tool_calls"]["get_dataset_info"]["time"] += duration
+    return result
+
+def read_dataset_data(directory_path: str, file_path: str, dataset_path: str, slice_start: Optional[List[int]] = None, slice_end: Optional[List[int]] = None) -> Dict[str, Any]:
+    """Read data from a specific dataset with optional slicing, respecting MAX_SLICE_SIZE."""
+    start_time = time.time()
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if dataset_path not in f:
+                    result = {"error": f"Dataset not found: {dataset_path}"}
+                elif not isinstance(f[dataset_path], h5py.Dataset):
+                    result = {"error": f"Not a dataset: {dataset_path}"}
+                else:
+                    ds = f[dataset_path]
+                    shape = ds.shape
+                    
+                    # Handle slicing
+                    if slice_start is None and slice_end is None:
+                        slice_size = np.prod(shape)
+                        slice_obj = slice(None)
+                    else:
+                        slice_start = slice_start or [0] * len(shape)
+                        slice_end = slice_end or list(shape)
+                        if len(slice_start) != len(shape) or len(slice_end) != len(shape):
+                            return {"error": f"Slice dimensions ({len(slice_start)}, {len(slice_end)}) must match dataset dimensions ({len(shape)})"}
+                        slices = []
+                        slice_size = 1
+                        for i, (start, end, dim) in enumerate(zip(slice_start, slice_end, shape)):
+                            start = max(0, min(start, dim))
+                            end = max(start, min(end, dim))
+                            slices.append(slice(start, end))
+                            slice_size *= (end - start)
+                        slice_obj = tuple(slices) if len(slices) > 1 else slices[0]
+                    
+                    if slice_size > MAX_SLICE_SIZE:
+                        return {"error": f"Requested slice size ({slice_size} elements) exceeds MAX_SLICE_SIZE ({MAX_SLICE_SIZE})"}
+                    
+                    data = ds[slice_obj]
+                    if isinstance(data, np.ndarray):
+                        data_str = np.array2string(data, threshold=100, edgeitems=3, max_line_width=100)
+                    else:
+                        data_str = str(data)
+                    
+                    result = {
+                        "dataset": dataset_path,
+                        "data": data_str,
+                        "shape": list(data.shape) if hasattr(data, 'shape') else [],
+                        "dtype": str(data.dtype) if hasattr(data, 'dtype') else str(type(data).__name__)
+                    }
+        except Exception as e:
+            result = {"error": f"Error reading dataset: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["read_dataset_data"] = METRICS["tool_calls"].get("read_dataset_data", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["read_dataset_data"]["count"] += 1
+    METRICS["tool_calls"]["read_dataset_data"]["time"] += duration
+    return result
+
+def list_all_datasets(directory_path: str, file_path: str) -> Dict[str, Any]:
+    """List all datasets in the HDF5 file, grouped by their parent groups."""
+    start_time = time.time()
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                datasets_by_group = {}
+                def collect_datasets(name, obj):
+                    if isinstance(obj, h5py.Dataset):
+                        parent_group = '/' if '/' not in name else name.rsplit('/', 1)[0]
+                        datasets_by_group.setdefault(parent_group, []).append(name)
+                f.visititems(collect_datasets)
+                result = {"datasets_by_group": datasets_by_group, "file": file_path}
+        except Exception as e:
+            result = {"error": f"Error listing all datasets: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["list_all_datasets"] = METRICS["tool_calls"].get("list_all_datasets", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["list_all_datasets"]["count"] += 1
+    METRICS["tool_calls"]["list_all_datasets"]["time"] += duration
+    return result
+
+def get_file_metadata(directory_path: str, file_path: str) -> Dict[str, Any]:
+    """Retrieve metadata stats like creation time and size for the HDF5 file."""
+    start_time = time.time()
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            # File system metadata
+            stat_info = os.stat(full_path)
+            result = {
+                "file": file_path,
+                "size_bytes": stat_info.st_size,
+                "creation_time": time.ctime(stat_info.st_ctime),
+                "modification_time": time.ctime(stat_info.st_mtime)
             }
-    except Exception as e:
-        return {"error": f"Error retrieving dataset info: {str(e)}"}
+            # Add HDF5-specific metadata if available
+            with h5py.File(full_path, 'r') as f:
+                attrs = dict(f.attrs.items())
+                if attrs:
+                    result["attributes"] = {k: str(v) for k, v in attrs.items()}
+        except Exception as e:
+            result = {"error": f"Error retrieving file metadata: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["get_file_metadata"] = METRICS["tool_calls"].get("get_file_metadata", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["get_file_metadata"]["count"] += 1
+    METRICS["tool_calls"]["get_file_metadata"]["time"] += duration
+    return result
 
 # --- Tool Registry ---
 tool_registry = {
@@ -179,105 +359,150 @@ tool_registry = {
     "list_datasets": {"func": list_datasets, "args_model": ListDatasetsArgs},
     "get_group_attribute": {"func": get_group_attribute, "args_model": GetGroupAttributeArgs},
     "get_file_attribute": {"func": get_file_attribute, "args_model": GetFileAttributeArgs},
-    "get_dataset_info": {"func": get_dataset_info, "args_model": GetDatasetInfoArgs}
+    "get_dataset_info": {"func": get_dataset_info, "args_model": GetDatasetInfoArgs},
+    "read_dataset_data": {"func": read_dataset_data, "args_model": ReadDatasetDataArgs},
+    "list_all_datasets": {"func": list_all_datasets, "args_model": ListAllDatasetsArgs},
+    "get_file_metadata": {"func": get_file_metadata, "args_model": GetFileMetadataArgs}
 }
 
 # --- Processing Agent ---
 async def processing_agent(directory_path: str, query: str, client: ollama.AsyncClient, model: str) -> Dict[str, Any]:
-    """Process the query using tools and return structured results."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                f"The HDF5 files are located in {directory_path}. Use relative paths (e.g., 'test_data.h5') without a leading '/'.\n\n"
-                f"Query: {query}\n\n"
-                "Respond only in JSON:\n"
-                "- {\"tool_call\": {\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}}\n"
-                "- {\"result\": <tool_result>} (return this immediately after a successful tool call)\n\n"
-                "Tools:\n"
-                "- list_files: List HDF5 files (no arguments, use empty {})\n"
-                "- list_groups: List groups (argument: 'file_path')\n"
-                "- list_datasets: List datasets (arguments: 'file_path', 'group_path'; use '/' for the root group)\n"
-                "- get_group_attribute: Get a group attribute (arguments: 'file_path', 'group_path', 'attribute_name')\n"
-                "- get_file_attribute: Get a file attribute (arguments: 'file_path', 'attribute_name')\n"
-                "- get_dataset_info: Get dataset metadata (arguments: 'file_path', 'dataset_path')\n\n"
-                "Rules:\n"
-                "- Use 'list_files' only for listing all files, with empty arguments.\n"
-                "- For specific files, use other tools directly.\n"
-                "- For queries about the 'root group', use 'group_path': '/' where applicable.\n"
-                "- If a tool call fails due to missing arguments, adjust and retry with correct arguments.\n"
-                "- After a tool succeeds (no 'error' in result), return {\"result\": <tool_result>} and stop immediately."
-            )
-        }
-    ]
-    
-    max_iterations = 5
-    for _ in range(max_iterations):
-        response = await client.chat(model=model, messages=messages, format="json")
-        content = response['message']['content'].strip()
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            messages.append({"role": "system", "content": "Invalid JSON. Provide valid JSON."})
-            continue
+    """Process the query using tools and return structured results, handling multi-step queries."""
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True, console=console) as progress:
+        task = progress.add_task("Processing query...", total=None)
+        accumulated_results = {}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"The HDF5 files are located in {directory_path}. Use relative paths (e.g., 'test_data.h5') without a leading '/'.\n\n"
+                    f"Query: {query}\n\n"
+                    "Respond only in JSON:\n"
+                    "- {\"tool_call\": {\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}} to execute a tool\n"
+                    "- {\"done\": true, \"results\": <accumulated_results>} to finish with all results\n"
+                    "- {\"error\": \"message\"} if the query cannot be processed\n\n"
+                    "Tools:\n"
+                    "- list_files: List HDF5 files (no arguments, use empty {})\n"
+                    "- list_groups: List groups (argument: 'file_path')\n"
+                    "- list_datasets: List datasets in a group (arguments: 'file_path', 'group_path'; use '/' for root)\n"
+                    "- get_group_attribute: Get a group attribute (arguments: 'file_path', 'group_path', 'attribute_name')\n"
+                    "- get_file_attribute: Get a file attribute (arguments: 'file_path', 'attribute_name')\n"
+                    "- get_dataset_info: Get dataset metadata (arguments: 'file_path', 'dataset_path')\n"
+                    "- read_dataset_data: Read dataset data (arguments: 'file_path', 'dataset_path', optional 'slice_start' and 'slice_end' as lists; limited to {MAX_SLICE_SIZE} elements)\n"
+                    "- list_all_datasets: List all datasets grouped by parent groups (argument: 'file_path')\n"
+                    "- get_file_metadata: Get file metadata like size and creation time (argument: 'file_path')\n\n"
+                    "Rules:\n"
+                    "- For multi-step queries, execute tools sequentially, accumulating results in each step.\n"
+                    "- Use previous tool results (from 'accumulated_results') to inform subsequent tool calls.\n"
+                    "- For 'read_dataset_data', 'slice_start' and 'slice_end' are optional lists matching dataset dimensions.\n"
+                    "- When all parts of the query are resolved, return {\"done\": true, \"results\": <accumulated_results>}.\n"
+                    "- Maintain state across iterations using 'accumulated_results'.\n\n"
+                    "Examples:\n"
+                    "- Query: 'First list groups in test.h5, then datasets in group1'\n"
+                    "  Step 1: {\"tool_call\": {\"name\": \"list_groups\", \"arguments\": {\"file_path\": \"test.h5\"}}}\n"
+                    "  Step 2: {\"tool_call\": {\"name\": \"list_datasets\", \"arguments\": {\"file_path\": \"test.h5\", \"group_path\": \"group1\"}}}\n"
+                    "  Step 3: {\"done\": true, \"results\": {\"groups\": {...}, \"datasets\": {...}}}\n"
+                )
+            }
+        ]
         
-        if "tool_call" in data:
-            tool_call = data["tool_call"]
-            tool_name = tool_call["name"]
-            arguments = tool_call.get("arguments", {})
+        max_iterations = 10  # Increased to handle more steps
+        for iteration in range(max_iterations):
+            start_time = time.time()
+            response = await client.chat(model=model, messages=messages, format="json")
+            duration = time.time() - start_time
+            METRICS["llm_calls"] += 1
+            METRICS["llm_time"] += duration
+            METRICS["token_count"] += response.get('eval_count', 0)
             
-            print(f"[Tool Call] {tool_name} with arguments: {arguments}")
-            if tool_name not in tool_registry:
-                result = {"error": f"Unknown tool: {tool_name}"}
-            else:
-                tool = tool_registry[tool_name]
-                if tool["args_model"]:
-                    try:
-                        args = tool["args_model"](**arguments)
-                        result = tool["func"](directory_path, **args.model_dump())
-                    except ValidationError as e:
-                        result = {"error": f"Invalid arguments: {str(e)}"}
-                else:
-                    result = tool["func"](directory_path)
+            content = response['message']['content'].strip()
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                messages.append({"role": "system", "content": "Invalid JSON. Provide valid JSON."})
+                continue
             
-            print(f"[Tool Result] {result}")
-            messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "tool", "content": json.dumps({"tool": tool_name, "result": result})})
-            if "error" in result:
-                if "group_path" in str(result.get("error", "")) and "required" in str(result.get("error", "")):
-                    messages.append({"role": "system", "content": "Missing 'group_path'. For root group queries, use 'group_path': '/'."})
+            if "tool_call" in data:
+                tool_call = data["tool_call"]
+                tool_name = tool_call["name"]
+                arguments = tool_call.get("arguments", {})
+                
+                print(f"[Tool Call] {tool_name} with arguments: {arguments}")
+                if tool_name not in tool_registry:
+                    result = {"error": f"Unknown tool: {tool_name}"}
                 else:
-                    messages.append({"role": "system", "content": "Tool failed. Adjust or return an error result."})
+                    tool = tool_registry[tool_name]
+                    if tool["args_model"]:
+                        try:
+                            args = tool["args_model"](**arguments)
+                            result = tool["func"](directory_path, **args.model_dump())
+                        except ValidationError as e:
+                            result = {"error": f"Invalid arguments: {str(e)}"}
+                    else:
+                        result = tool["func"](directory_path)
+                
+                print(f"[Tool Result] {result}")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "tool", "content": json.dumps({"tool": tool_name, "result": result})})
+                if "error" not in result:
+                    accumulated_results[tool_name] = result
+                    messages.append({"role": "system", "content": f"Accumulated results so far: {json.dumps(accumulated_results)}\nContinue with the next step or finish if done."})
+                else:
+                    messages.append({"role": "system", "content": f"Tool failed: {result['error']}. Adjust or proceed."})
+            elif "done" in data and "results" in data:
+                progress.update(task, description="Query processed")
+                return data["results"]
+            elif "error" in data:
+                progress.update(task, description="Processing failed")
+                return {"error": data["error"]}
             else:
-                return result
-        elif "result" in data:
-            return data["result"]
-        else:
-            messages.append({"role": "system", "content": "Provide 'tool_call' or 'result'."})
-    
-    return {"error": "Processing failed after max iterations"}
+                messages.append({"role": "system", "content": "Provide 'tool_call', 'done', or 'error'."})
+        
+        progress.update(task, description="Processing failed")
+        return {"error": "Processing failed after max iterations"}
 
 # --- Interface Agent ---
 async def interface_agent(directory_path: str, query: str, client: ollama.AsyncClient, model: str, processing_result: Dict[str, Any]) -> None:
     """Format and present the processing result conversationally."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a conversational HDF5 file explorer. Present results naturally and engagingly.\n"
-                "Avoid formal headers like 'Final response'. Offer next steps.\n\n"
-                "Use markdown for lists and structured data.\n\n"
-                f"Directory: {directory_path}\n"
-                f"Query: {query}\n"
-                f"Processing result: {json.dumps(processing_result)}\n\n"
-                "Respond with plain text, using markdown where appropriate."
-            )
-        }
-    ]
-    
-    response = await client.chat(model=model, messages=messages)
-    print("\nHDF5-Agent:")
-    print(response['message']['content'].strip())
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True, console=console) as progress:
+        task = progress.add_task("Formatting response...", total=None)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a friendly and helpful data exploration companion, acting as a guide to the HDF5 files in the provided directory. "
+                    "Your role is to represent the contents of the files and assist the user with their queries in a natural, conversational way. "
+                    "Focus strictly on the user's query and the processing result provided. "
+                    "Do NOT suggest Python code snippets or external tools unless explicitly asked by the user. "
+                    "Present results clearly and engagingly, using markdown for lists and structured data when appropriate. "
+                    "If the result contains an error, explain it simply and suggest how I can assist further. "
+                    "If the query is unclear or incomplete, ask the user for clarification or hint at my capabilities.\n\n"
+                    f"Directory: {directory_path}\n"
+                    f"Query: {query}\n"
+                    f"Processing result: {json.dumps(processing_result)}\n\n"
+                    "Respond with plain text, using markdown where appropriate."
+                )
+            }
+        ]
+        
+        start_time = time.time()
+        response = await client.chat(model=model, messages=messages)
+        duration = time.time() - start_time
+        METRICS["llm_calls"] += 1
+        METRICS["llm_time"] += duration
+        METRICS["token_count"] += response.get('eval_count', 0)
+        
+        print("\nHDF5-Agent:")
+        print(response['message']['content'].strip())
+        
+        print("\n--- Performance Metrics ---")
+        for tool, stats in METRICS["tool_calls"].items():
+            avg_time = stats["time"] / stats["count"] if stats["count"] > 0 else 0
+            print(f"{tool}: {stats['count']} calls, {stats['time']:.2f}s total, {avg_time:.2f}s avg")
+        avg_llm_time = METRICS["llm_time"] / METRICS["llm_calls"] if METRICS["llm_calls"] > 0 else 0
+        print(f"LLM: {METRICS['llm_calls']} calls, {METRICS['llm_time']:.2f}s total, {avg_llm_time:.2f}s avg")
+        print(f"Tokens: {METRICS['token_count']}")
+        progress.update(task, description="Response formatted")
 
 # --- Query Runner ---
 async def run_query(directory_path: str, query: str, client: ollama.AsyncClient, model: str) -> None:
@@ -288,24 +513,52 @@ async def run_query(directory_path: str, query: str, client: ollama.AsyncClient,
 # --- Ollama Client Initialization ---
 async def initialize_ollama_client(model: str) -> Optional[ollama.AsyncClient]:
     """Initialize the Ollama client and ensure the model is available."""
-    try:
-        client = ollama.AsyncClient(host='http://localhost:11434')
-        models_response = await client.list()
-        if 'models' not in models_response:
-            raise ValueError("Unexpected response format: 'models' key not found")
-        model_names = [m['model'] for m in models_response['models']]
-        
-        if model not in model_names:
-            print(f"Model {model} not found. Pulling from Ollama...")
-            await client.pull(model)
-            updated_models = await client.list()
-            model_names = [m['model'] for m in updated_models['models']]
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True, console=console) as progress:
+        task = progress.add_task("Initializing Ollama client...", total=None)
+        try:
+            client = ollama.AsyncClient(host='http://localhost:11434')
+            models_response = await client.list()
+            if 'models' not in models_response:
+                raise ValueError("Unexpected response format: 'models' key not found")
+            model_names = [m['model'] for m in models_response['models']]
+            
             if model not in model_names:
-                raise RuntimeError(f"Failed to pull model {model}")
-        return client
-    except Exception as e:
-        print(f"Error initializing Ollama client: {type(e).__name__} - {str(e)}")
-        return None
+                progress.update(task, description=f"Pulling model {model}...")
+                await client.pull(model)
+                updated_models = await client.list()
+                model_names = [m['model'] for m in updated_models['models']]
+                if model not in model_names:
+                    raise RuntimeError(f"Failed to pull model {model}")
+            progress.update(task, description="Ollama client initialized")
+            return client
+        except Exception as e:
+            progress.update(task, description=f"Error: {str(e)}")
+            print(f"Error initializing Ollama client: {type(e).__name__} - {str(e)}")
+            return None
+
+# --- Interactive Mode ---
+async def interactive_mode(directory_path: str, client: ollama.AsyncClient, model: str):
+    """Run an interactive shell with command history."""
+    print("Entering interactive mode. Type 'exit' to quit, 'history' to see past commands, or a number to rerun a command.")
+    while True:
+        query = input("HDF5> ").strip()
+        if query.lower() == "exit":
+            HISTORY.clear()
+            break
+        elif query.lower() == "history":
+            if not HISTORY:
+                print("No command history yet.")
+            else:
+                for i, cmd in enumerate(HISTORY):
+                    print(f"{i}: {cmd}")
+        elif query.isdigit() and 0 <= int(query) < len(HISTORY):
+            selected_query = HISTORY[int(query)]
+            print(f"Re-running: {selected_query}")
+            HISTORY.append(selected_query)
+            await run_query(directory_path, selected_query, client, model)
+        elif query:
+            HISTORY.append(query)
+            await run_query(directory_path, query, client, model)
 
 # --- Main Function ---
 async def main():
@@ -330,8 +583,9 @@ async def main():
     if args.query:
         await run_query(directory_path, args.query, client, model)
     else:
-        print("Interactive mode not implemented yet.")
-        sys.exit(0)
+        await interactive_mode(directory_path, client, model)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
