@@ -40,7 +40,7 @@ You are a highly skilled debugging AI. Your task is to analyze the provided `sfa
     *   Verify that the tool functions are correctly accessing groups, datasets, and attributes.
     *   Check for potential errors related to file paths, dataset names, or slicing operations.
 *   **Tool Call Parsing:**
-    *   Since Ollama's `/api/generate` doesn't provide structured function calls, confirm that the script's method for parsing tool calls (likely using regular expressions) is robust and accurate.
+    *   Use Ollama's structured output function calls and confirm that the script's method for parsing tool calls is robust and accurate.
     *   Ensure it handles various argument types (strings, numbers, lists) correctly.
     *   Check for edge cases or potential errors in the parsing logic.
 *   **Agent Loop:**

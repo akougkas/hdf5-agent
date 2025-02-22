@@ -31,7 +31,6 @@ License: MIT
 # license = "MIT"
 # dependencies = [
 #     "h5py>=3.8.0,<3.9.0",
-#     "requests~=2.31.0",
 #     "rich~=13.3.5",
 #     "pydantic>=2.4.2,<3.0.0",
 #     "ollama~=0.1.6",
@@ -42,6 +41,9 @@ License: MIT
 # ///
 
 import h5py
+from typing import Optional, List, Dict, Any, Type, TypeVar
+import asyncio
+from rich.table import Table
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from pydantic import BaseModel, Field
@@ -57,13 +59,10 @@ from typing import (
     Union
 )
 import ollama
-import requests
 import sys
 import os
-import re
 import json
 import time
-from functools import lru_cache
 import psutil
 import argparse
 
@@ -71,12 +70,9 @@ import argparse
 T = TypeVar('T', bound=BaseModel)
 
 # --- Constants ---
-MODEL = "phi4:latest"  # Default model to use
+OLLAMA_ENDPOINT = 'http://localhost:11434'
+MODEL = "granite3.1-dense:latest"  # Default model to use
 OLLAMA_API_TIMEOUT = 30  # Default timeout in seconds
-CACHE_SIZE = 128  # Size of LRU cache for metadata
-MAX_SLICE_SIZE = 1_000_000  # Maximum number of elements to read in a slice
-METADATA_CACHE_TTL = 300  # Time-to-live for metadata cache in seconds
-OLLAMA_ENDPOINT = "http://localhost:11434"
 MAX_RETRIES = 3
 RETRY_DELAY = 1
 
@@ -168,12 +164,6 @@ class AgentResponse(BaseModel):
     tool_call: Optional[ToolCall] = None
     response: Optional[str] = None
 
-# Performance metrics storage
-METRICS: Dict[str, List[float]] = {
-    'api_latency': [],
-    'file_operations': [],
-    'total_memory': []
-}
 
 # Global console and progress
 console = Console()
@@ -183,64 +173,109 @@ progress = Progress(
     console=console
 )
 
-# Initialize Ollama client with connection check
-client = None
-try:
-    client = ollama.Client(host=OLLAMA_ENDPOINT)
-    # Test connection with a simple query
-    client.chat(
-        model=MODEL,
-        messages=[{"role": "user", "content": "Hi"}],
-        stream=False
-    )
-except Exception as e:
-    console.print(f"[yellow]Note: Ollama connection not available ({str(e)})[/yellow]")
-    console.print("[yellow]Some features may be limited.[/yellow]")
-
-def check_ollama_connection() -> bool:
-    """Check if Ollama server is running and accessible.
+async def initialize_ollama_client() -> Optional[ollama.AsyncClient]:
+    """Initialize and test connection to Ollama API.
     
     Returns:
-        bool: True if Ollama server is running and accessible, False otherwise
+        Optional[ollama.AsyncClient]: Client instance if successful, None otherwise.
     """
     try:
-        if not client:
-            return False
-            
-        # Try to list models to verify connection
-        client.list()
-        return True
-    except Exception as e:
-        console.print(f"[yellow]Ollama connection error: {e}[/yellow]")
-        return False
+        client = None
+        model_names = []
+        model_table = None
 
-def ensure_model_loaded() -> bool:
-    """Ensure the required model is loaded in Ollama.
-    
-    Returns:
-        bool: True if model is loaded and ready, False otherwise
-    """
-    try:
-        if not client:
-            return False
-            
-        # Extract model name without version tag
-        model_name = MODEL.split(':')[0]
-        
-        # List available models and check if our model exists
-        models = client.list()
-        # Models are returned as a list of dicts with 'name' key
-        model_exists = any(model.get('name') == model_name for model in models['models'])
-        
-        if not model_exists:
-            console.print(f"[yellow]Model {MODEL} not found. Pulling...[/yellow]")
-            client.pull(MODEL)
-            console.print(f"[green]Successfully pulled {MODEL}[/green]")
-        
-        return True
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            auto_refresh=False,
+            refresh_per_second=1,
+        ) as task_progress:
+            # Step 1: Connect to Ollama
+            connect_task = task_progress.add_task("[cyan]Connecting to Ollama...[/cyan]", total=1)
+            client = ollama.AsyncClient(host=OLLAMA_ENDPOINT)
+            task_progress.update(connect_task, advance=1, description="[green]✓ Connected to Ollama[/green]")
+            task_progress.refresh()
+
+            # Step 2: List available models
+            list_task = task_progress.add_task("[cyan]Listing available models...[/cyan]", total=1)
+            try:
+                models = await client.list()
+                
+                # Handle ListResponse object which has a models attribute containing Model objects
+                if hasattr(models, 'models'):
+                    model_names = sorted([model.model for model in models.models])
+                else:
+                    # Fallback for any other response format
+                    model_names = []
+                
+                if not model_names:
+                    task_progress.update(list_task, advance=1, description="[yellow]! No models found[/yellow]")
+                else:
+                    task_progress.update(list_task, advance=1, description=f"[green]✓ Found {len(model_names)} models[/green]")
+                    model_table = Table(show_header=False, box=None, padding=(0, 2))
+                    for name in model_names:
+                        model_table.add_row(f"[cyan]•[/cyan]", name)
+            except Exception as e:
+                task_progress.update(list_task, advance=1, description=f"[red]✗ Failed to list models: {str(e)}[/red]")
+                model_names = []
+            task_progress.refresh()
+
+        # Print available models after progress is complete
+        if model_names:
+            console.print("\n[bold cyan]Available Models[/bold cyan]")
+            console.print(model_table)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            auto_refresh=False,
+            refresh_per_second=1,
+        ) as task_progress:
+            # Step 3: Check and pull model if needed
+            model_task = task_progress.add_task(f"[cyan]Checking model {MODEL}...[/cyan]", total=1)
+            if MODEL in model_names:
+                task_progress.update(model_task, advance=1, description=f"[green]✓ Default model '{MODEL}' already available[/green]")
+            else:
+                task_progress.update(model_task, description=f"[cyan]Model {MODEL} not found - pulling from Ollama...[/cyan]")
+                try:
+                    await client.pull(model=MODEL)
+                    task_progress.update(model_task, advance=1, description=f"[green]✓ Model {MODEL} pulled successfully[/green]")
+                except Exception as e:
+                    task_progress.update(model_task, advance=1, description=f"[red]✗ Failed to pull model {MODEL}: {str(e)}[/red]")
+                    raise
+            task_progress.refresh()
+
+            # Step 4: Test model with a simple query
+            test_task = task_progress.add_task("[cyan]Testing model...[/cyan]", total=1)
+            try:
+                test_response = await client.chat(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": "Reply with 'OK' only"}],
+                    stream=False
+                )
+                # The response format varies between Ollama versions, handle both cases
+                if hasattr(test_response, 'message'):
+                    response_text = test_response.message.get('content', '')
+                elif isinstance(test_response, dict):
+                    response_text = test_response.get('response', '')
+                else:
+                    raise ValueError(f"Unexpected response format: {type(test_response)}")
+                
+                task_progress.update(test_task, advance=1, description="[green]✓ Model test successful[/green]")
+                task_progress.refresh()
+            except Exception as e:
+                task_progress.update(test_task, advance=1, description=f"[red]✗ Model test failed: {str(e)}[/red]")
+                raise ValueError(f"Model test failed: {str(e)}")
+
+        console.print(f"\n[green]Using model:[/green] [cyan]{MODEL}[/cyan]\n")
+        return client
+
     except Exception as e:
-        console.print(f"[red]Error checking/pulling model: {e}[/red]")
-        return False
+        console.print(f"[red]Error initializing Ollama client: {str(e)}[/red]")
+        return None
+
+# Initialize the Ollama client
+client = asyncio.run(initialize_ollama_client())
 
 def list_groups(file_path: str) -> str:
     """List all groups in an HDF5 file."""
@@ -349,7 +384,7 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> Optional[str]:
         console.print(f"[red]Error executing tool {tool_name}: {e}[/red]")
         return None
 
-def call_ollama(
+async def call_ollama(
     prompt_messages: List[Dict[str, str]],
     system_prompt: str = "",
     response_format: Optional[Type[T]] = None,
@@ -369,7 +404,7 @@ def call_ollama(
                 # Debug print
                 console.print("[cyan]Sending request to Ollama...[/cyan]")
                 
-                response = client.chat(
+                response = await client.chat(
                     model=MODEL,
                     messages=prompt_messages,
                     stream=False,
@@ -398,7 +433,7 @@ def call_ollama(
     finally:
         progress.remove_task(task)
 
-def process_query(directory_path: str, query: str) -> None:
+async def process_query(directory_path: str, query: str) -> None:
     """Process a user query about HDF5 files."""
     # Create a new progress instance for each query
     with Progress(
@@ -415,7 +450,7 @@ def process_query(directory_path: str, query: str) -> None:
 
             while True:  # Main loop for interaction
                 # Process the query through Ollama
-                response = call_ollama(prompt_messages)
+                response = await call_ollama(prompt_messages)
 
                 if response and 'message' in response:
                     content = response['message']['content']
@@ -488,15 +523,6 @@ def get_memory_usage() -> float:
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024
 
-def print_performance_metrics() -> None:
-    """Print collected performance metrics."""
-    console.print("\n[cyan]Performance Metrics:[/cyan]")
-    if METRICS['api_latency']:
-        avg_latency = sum(METRICS['api_latency']) / len(METRICS['api_latency'])
-        console.print(f"Average API Latency: {avg_latency:.2f}s")
-    if METRICS['total_memory']:
-        max_memory = max(METRICS['total_memory'])
-        console.print(f"Peak Memory Usage: {max_memory:.2f}MB")
 
 def main() -> None:
     """Main function for the HDF5 agent."""
@@ -521,31 +547,20 @@ def main() -> None:
             sys.exit(1)
         
         # Initial setup with progress display
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as setup_progress:
-            setup_task = setup_progress.add_task("[cyan]Initializing...", total=None)
-            
-            # Check Ollama connection and model
-            if not check_ollama_connection():
-                console.print("[red]Error: Cannot connect to Ollama. Is it running?[/red]")
-                console.print("Start Ollama with: ollama serve")
-                sys.exit(1)
-                
-            if not ensure_model_loaded():
-                console.print(f"[red]Error: Could not load model {MODEL}[/red]")
-                sys.exit(1)
+        # Initialize Ollama client
+        global client
+        client = asyncio.run(initialize_ollama_client())
+        if client is None:
+            console.print("[red]Error: Cannot connect to Ollama. Is it running?[/red]")
+            console.print("Start Ollama with: ollama serve")
+            sys.exit(1)
         
         # Track initial memory usage
         initial_memory = get_memory_usage()
-        METRICS['total_memory'].append(initial_memory)
         
         # If query is provided as command line argument
         if args.query:
-            process_query(directory_path, args.query)
-            print_performance_metrics()
+            asyncio.run(process_query(directory_path, args.query))
             return
         
         # Interactive mode
@@ -554,7 +569,6 @@ def main() -> None:
             try:
                 # Update memory tracking
                 current_memory = get_memory_usage()
-                METRICS['total_memory'].append(current_memory)
                 
                 # Get user input with prompt
                 query = input("\nQuery> ").strip()
@@ -564,13 +578,11 @@ def main() -> None:
                     break
                 
                 # Process query
-                process_query(directory_path, query)
+                asyncio.run(process_query(directory_path, query))
                 
                 # Cleanup if memory usage is high
                 if current_memory > initial_memory * 2:
                     console.print("[yellow]Cleaning up cache...[/yellow]")
-                    get_dataset_metadata.cache_clear()
-                    get_dataset_info.cache_clear()
                 
             except KeyboardInterrupt:
                 console.print("\n[yellow]Operation interrupted by user[/yellow]")
