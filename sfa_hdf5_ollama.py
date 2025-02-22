@@ -2,9 +2,22 @@
 Single-File HDF5 Agent (SFA-HDF5)
 
 This module implements a natural language interface for exploring HDF5 data files using
-a local Language Model (LLM) served by Ollama. It uses an agentic flow with:
-- Interface Agent: Handles user interaction and conversational output
-- Processing Agent: Manages tool execution and structured responses
+a local Language Model (LLM) served by Ollama. The agent provides functionality to:
+- List and navigate HDF5 files, groups, and datasets
+- Retrieve group and file attributes
+- Retrieve dataset information, shapes, data types, and attributes
+- Read and analyze data slices
+- Generate dataset summaries
+
+The agent uses a tool-based architecture where the LLM can invoke specific functions
+to interact with HDF5 files based on natural language queries.
+
+This is a self-contained single file that uses astral/uv for dependency management.
+All dependencies are specified in the script header and will be automatically installed
+when the script is run.
+
+Dependencies are managed using astral/uv to ensure reproducibility and portability.
+The script can be run directly without any external requirements.txt file.
 
 Author: Anthony Kougkas | https://akougkas.io
 License: MIT
@@ -12,7 +25,7 @@ License: MIT
 
 # /// script
 # package = "sfa-hdf5-agent"
-# version = "0.1.0"
+# version = "0.2.0"
 # authors = ["Anthony Kougkas | https://akougkas.io"]
 # description = "Single-File HDF5 Agent with natural language interface"
 # repository = "https://github.com/akougkas/hdf5-agent"
@@ -36,8 +49,10 @@ from pydantic import BaseModel, Field, ValidationError
 from typing import Dict, Any, Optional
 import argparse
 import sys
+from functools import lru_cache
 
 DEFAULT_MODEL = "granite3.1-dense:latest"  # Default Ollama model
+CACHE_SIZE = 128  # Configurable cache size for LRU caching
 
 # --- Pydantic Models for Tool Arguments ---
 class ListGroupsArgs(BaseModel):
@@ -46,6 +61,19 @@ class ListGroupsArgs(BaseModel):
 class ListDatasetsArgs(BaseModel):
     file_path: str = Field(..., description="Relative path to the HDF5 file")
     group_path: str = Field(..., description="Path to the group within the file")
+
+class GetGroupAttributeArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+    group_path: str = Field(..., description="Path to the group within the file")
+    attribute_name: str = Field(..., description="Name of the attribute to retrieve")
+
+class GetFileAttributeArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+    attribute_name: str = Field(..., description="Name of the attribute to retrieve")
+
+class GetDatasetInfoArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+    dataset_path: str = Field(..., description="Path to the dataset within the file")
 
 # --- Tool Functions ---
 def list_files(directory_path: str) -> Dict[str, Any]:
@@ -86,11 +114,72 @@ def list_datasets(directory_path: str, file_path: str, group_path: str) -> Dict[
     except Exception as e:
         return {"error": f"Error listing datasets: {str(e)}"}
 
+@lru_cache(maxsize=CACHE_SIZE)
+def get_group_attribute(directory_path: str, file_path: str, group_path: str, attribute_name: str) -> Dict[str, Any]:
+    """Retrieve the value of a specific attribute of a group."""
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        return {"error": f"File not found: {file_path}"}
+    try:
+        with h5py.File(full_path, 'r') as f:
+            if group_path not in f:
+                return {"error": f"Group not found: {group_path}"}
+            group = f[group_path]
+            if not isinstance(group, h5py.Group):
+                return {"error": f"Not a group: {group_path}"}
+            if attribute_name not in group.attrs:
+                return {"error": f"Attribute '{attribute_name}' not found in group '{group_path}'"}
+            value = group.attrs[attribute_name]
+            return {"attribute": attribute_name, "value": str(value), "group": group_path}
+    except Exception as e:
+        return {"error": f"Error retrieving group attribute: {str(e)}"}
+
+@lru_cache(maxsize=CACHE_SIZE)
+def get_file_attribute(directory_path: str, file_path: str, attribute_name: str) -> Dict[str, Any]:
+    """Retrieve the value of a specific attribute of the HDF5 file."""
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        return {"error": f"File not found: {file_path}"}
+    try:
+        with h5py.File(full_path, 'r') as f:
+            if attribute_name not in f.attrs:
+                return {"error": f"Attribute '{attribute_name}' not found in file '{file_path}'"}
+            value = f.attrs[attribute_name]
+            return {"attribute": attribute_name, "value": str(value), "file": file_path}
+    except Exception as e:
+        return {"error": f"Error retrieving file attribute: {str(e)}"}
+
+@lru_cache(maxsize=CACHE_SIZE)
+def get_dataset_info(directory_path: str, file_path: str, dataset_path: str) -> Dict[str, Any]:
+    """Retrieve metadata about a specific dataset (shape, dtype, attributes)."""
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        return {"error": f"File not found: {file_path}"}
+    try:
+        with h5py.File(full_path, 'r') as f:
+            if dataset_path not in f:
+                return {"error": f"Dataset not found: {dataset_path}"}
+            ds = f[dataset_path]
+            if not isinstance(ds, h5py.Dataset):
+                return {"error": f"Not a dataset: {dataset_path}"}
+            attrs = dict(ds.attrs.items())
+            return {
+                "dataset": dataset_path,
+                "shape": list(ds.shape),
+                "dtype": str(ds.dtype),
+                "attributes": {k: str(v) for k, v in attrs.items()}
+            }
+    except Exception as e:
+        return {"error": f"Error retrieving dataset info: {str(e)}"}
+
 # --- Tool Registry ---
 tool_registry = {
     "list_files": {"func": list_files, "args_model": None},
     "list_groups": {"func": list_groups, "args_model": ListGroupsArgs},
-    "list_datasets": {"func": list_datasets, "args_model": ListDatasetsArgs}
+    "list_datasets": {"func": list_datasets, "args_model": ListDatasetsArgs},
+    "get_group_attribute": {"func": get_group_attribute, "args_model": GetGroupAttributeArgs},
+    "get_file_attribute": {"func": get_file_attribute, "args_model": GetFileAttributeArgs},
+    "get_dataset_info": {"func": get_dataset_info, "args_model": GetDatasetInfoArgs}
 }
 
 # --- Processing Agent ---
@@ -108,11 +197,14 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
                 "Tools:\n"
                 "- list_files: List HDF5 files (no arguments, use empty {})\n"
                 "- list_groups: List groups (argument: 'file_path')\n"
-                "- list_datasets: List datasets (arguments: 'file_path', 'group_path'; use '/' for the root group)\n\n"
+                "- list_datasets: List datasets (arguments: 'file_path', 'group_path'; use '/' for the root group)\n"
+                "- get_group_attribute: Get a group attribute (arguments: 'file_path', 'group_path', 'attribute_name')\n"
+                "- get_file_attribute: Get a file attribute (arguments: 'file_path', 'attribute_name')\n"
+                "- get_dataset_info: Get dataset metadata (arguments: 'file_path', 'dataset_path')\n\n"
                 "Rules:\n"
                 "- Use 'list_files' only for listing all files, with empty arguments.\n"
-                "- For specific files, use 'list_groups' or 'list_datasets' directly.\n"
-                "- For queries about the 'root group', use 'list_datasets' with 'group_path': '/'.\n"
+                "- For specific files, use other tools directly.\n"
+                "- For queries about the 'root group', use 'group_path': '/' where applicable.\n"
                 "- If a tool call fails due to missing arguments, adjust and retry with correct arguments.\n"
                 "- After a tool succeeds (no 'error' in result), return {\"result\": <tool_result>} and stop immediately."
             )
@@ -134,7 +226,7 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
             tool_name = tool_call["name"]
             arguments = tool_call.get("arguments", {})
             
-            print(f"Calling tool: {tool_name} with arguments: {arguments}")
+            print(f"[Tool Call] {tool_name} with arguments: {arguments}")
             if tool_name not in tool_registry:
                 result = {"error": f"Unknown tool: {tool_name}"}
             else:
@@ -148,7 +240,7 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
                 else:
                     result = tool["func"](directory_path)
             
-            print(f"Tool result: {result}")
+            print(f"[Tool Result] {result}")
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "tool", "content": json.dumps({"tool": tool_name, "result": result})})
             if "error" in result:
@@ -157,7 +249,6 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
                 else:
                     messages.append({"role": "system", "content": "Tool failed. Adjust or return an error result."})
             else:
-                # Explicitly return the result and break after success
                 return result
         elif "result" in data:
             return data["result"]
@@ -175,10 +266,11 @@ async def interface_agent(directory_path: str, query: str, client: ollama.AsyncC
             "content": (
                 "You are a conversational HDF5 file explorer. Present results naturally and engagingly.\n"
                 "Avoid formal headers like 'Final response'. Offer next steps.\n\n"
+                "Use markdown for lists and structured data.\n\n"
                 f"Directory: {directory_path}\n"
                 f"Query: {query}\n"
                 f"Processing result: {json.dumps(processing_result)}\n\n"
-                " Respond with plain text, using markdown for lists."
+                "Respond with plain text, using markdown where appropriate."
             )
         }
     ]
