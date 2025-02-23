@@ -1,129 +1,122 @@
-## Agent Testing Commands
+# Test Queries
 
-### Basic Operations
-1. List available files:
+## Basic Operations
+
+### List Available Files
 ```bash
-uv run sfa_hdf5_ollama.py data "List all HDF5 files in this directory"
+uv run sfa_hdf5_ollama.py data "List all HDF5 files in the directory."
 ```
+Purpose: Tests the optimized list_files tool with async globbing, ensuring quick file discovery.
 
-2. Basic group exploration:
+### Basic Group Exploration
 ```bash
 uv run sfa_hdf5_ollama.py data "What groups are in test_data.h5?"
 ```
+Purpose: Uses cached file access in list_groups for faster group listing.
 
-3. Nested group listing:
+### Nested Group Listing
 ```bash
-uv run sfa_hdf5_ollama.py data "Show me all groups and their subgroups in test_data.h5"
+uv run sfa_hdf5_ollama.py data "Show all groups in test_data.h5."
 ```
+Purpose: Tests efficient group iteration with minimal I/O via cached h5py.File.
 
-### Dataset Operations
-4. Dataset discovery:
+## Dataset Operations
+
+### Dataset Discovery in Root
 ```bash
-uv run sfa_hdf5_ollama.py data "List all datasets in the root group of test_data.h5"
+uv run sfa_hdf5_ollama.py data "List all datasets in the root group of test_data.h5."
 ```
+Purpose: Tests list_datasets with the root group (/) using optimized iteration.
 
-5. Specific group datasets:
+### Specific Group Datasets
 ```bash
-uv run sfa_hdf5_ollama.py data "What datasets are available in the /measurements group of test_data.h5?"
+uv run sfa_hdf5_ollama.py data "What datasets are in the /measurements group of test_data.h5?"
 ```
+Purpose: Verifies dataset listing in a specific group with cached file access.
 
-### Complex Queries
-6. Multi-step exploration:
+## Complex Queries
+
+### Multi-Step Exploration
 ```bash
-uv run grok_sfa_hdf5_ollama.py data "First show me all groups in test_data.h5, then list the datasets in the deepest group"
+uv run sfa_hdf5_ollama.py data "List groups in test_data.h5 and then list datasets in /measurements."
 ```
+Purpose: Tests concurrent tool execution (list_groups and list_datasets) with a single LLM call, leveraging the new processing agent.
 
-7. Conditional exploration:
+### Conditional Exploration
 ```bash
-uv run grok_sfa_hdf5_ollama.py data "Find all groups in test_data.h5 that contain datasets"
+uv run sfa_hdf5_ollama.py data "Find all groups in test_data.h5 with datasets and summarize one."
 ```
+Purpose: Combines list_datasets and summarize_dataset in parallel, testing multi-tool efficiency.
 
-### Error Handling
-8. Invalid file:
+## Error Handling
+
+### Invalid File
 ```bash
-uv run grok_sfa_hdf5_ollama.py data "Show me the contents of nonexistent.h5"
+uv run sfa_hdf5_ollama.py data "Show contents of nonexistent.h5."
 ```
+Purpose: Ensures proper error reporting with minimal LLM overhead.
 
-9. Invalid group path:
+### Invalid Group Path
 ```bash
-uv run grok_sfa_hdf5_ollama.py data "List datasets in /not/a/real/path within test_data.h5"
+uv run sfa_hdf5_ollama.py data "List datasets in /not/a/real/path in test_data.h5."
 ```
+Purpose: Tests error handling for invalid group paths with cached file checks.
 
-10. Complex error case:
+### Complex Error Case
 ```bash
-uv run grok_sfa_hdf5_ollama.py data "First list groups in nonexistent.h5, then show datasets in test_data.h5"
+uv run sfa_hdf5_ollama.py data "List groups in nonexistent.h5 then datasets in test_data.h5."
 ```
+Purpose: Verifies graceful handling of mixed valid/invalid operations in a single query.
 
+## Test Queries for read_dataset_data
 
-
-
-### Test Queries for read_dataset_data
-
-#### Full Dataset Read (Small Numerical Data)
-- **Test Name**: ReadFullIntegers1D
-- **Test CLI Command**:
+### Full Dataset Read (Small Numerical Data)
 ```bash
-uv run sfa_hdf5_ollama.py data "Read all data from dataset 'numerical_data/integers_1d' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read all data from 'numerical_data/integers_1d' in test_data.h5."
 ```
-- **Purpose**: Tests reading an entire 1D dataset, assuming it's small enough to fit under MAX_SLICE_SIZE (1M elements).
+Purpose: Tests full dataset reading with optimized slicing and async I/O.
 
-#### Slicing First N Elements (Timeseries)
-- **Test Name**: ReadFirst10Temperature
-- **Test CLI Command**:
+### Slicing First N Elements (Timeseries)
 ```bash
-uv run sfa_hdf5_ollama.py data "Read the first 10 elements of dataset 'timeseries/temperature' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read the first 10 elements of 'timeseries/temperature' in test_data.h5."
 ```
-- **Purpose**: Tests slicing a 1D dataset with a simple range (0 to 10).
+Purpose: Validates slicing with dynamic MAX_SLICE_SIZE enforcement.
 
-#### Specific Range Slicing (Numerical 2D)
-- **Test Name**: ReadFloats2DSlice
-- **Test CLI Command**:
+### Specific Range Slicing (Numerical 2D)
 ```bash
-uv run sfa_hdf5_ollama.py data "Read rows 2 to 5 and columns 1 to 3 of dataset 'numerical_data/floats_2d' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read rows 2 to 5 and columns 1 to 3 of 'numerical_data/floats_2d' in test_data.h5."
 ```
-- **Purpose**: Tests 2D slicing with specific row and column ranges, assuming floats_2d is a 2D array.
+Purpose: Tests 2D slicing with efficient async data retrieval.
 
-#### Large Dataset Size Limit Test (Compressed 3D)
-- **Test Name**: ReadLargeCompressed3D
-- **Test CLI Command**:
+### Large Dataset Size Limit Test (Compressed 3D)
 ```bash
-uv run sfa_hdf5_ollama.py data "Read all data from dataset 'numerical_data/compressed_3d' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read all data from 'numerical_data/compressed_3d' in test_data.h5."
 ```
-- **Purpose**: Tests the MAX_SLICE_SIZE limit, assuming compressed_3d might exceed 1M elements due to its 3D nature.
+Purpose: Ensures MAX_SLICE_SIZE limits are respected for large datasets.
 
-#### Text Data Read (Full)
-- **Test Name**: ReadTextFruits
-- **Test CLI Command**:
+### Text Data Read (Full)
 ```bash
-uv run sfa_hdf5_ollama.py data "Read all data from dataset 'text_data/fruits' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read all data from 'text_data/fruits' in test_data.h5."
 ```
-- **Purpose**: Tests reading a text-based dataset, assuming it's small enough to fit under MAX_SLICE_SIZE.
+Purpose: Tests text data handling with optimized numpy string conversion.
 
-#### Nested Dataset Slicing
-- **Test Name**: ReadNestedLevel3Slice
-- **Test CLI Command**:
+### Nested Dataset Slicing
 ```bash
-uv run sfa_hdf5_ollama.py data "Read the first 5 elements of dataset 'nested/level1/level2/level3/data_3' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read the first 5 elements of 'nested/level1/level2/level3/data_3' in test_data.h5."
 ```
-- **Purpose**: Tests reading from a deeply nested dataset with a small slice.
+Purpose: Verifies deep path handling with cached file access.
 
-#### Non-Existent Dataset Error
-- **Test Name**: ReadNonExistentDataset
-- **Test CLI Command**:
+### Non-Existent Dataset Error
 ```bash
-uv run sfa_hdf5_ollama.py data "Read dataset 'numerical_data/fake_data' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "Read 'numerical_data/fake_data' in test_data.h5."
 ```
-- **Purpose**: Tests error handling for a dataset that doesn't exist.
+Purpose: Tests error handling for missing datasets.
 
-#### Image Data Partial Read
-- **Test Name**: ReadImageNoiseSlice
-- **Test CLI Command**:
+### Text Data Comparison
 ```bash
-uv run sfa_hdf5_ollama.py data "Read rows 0 to 10 and columns 0 to 10 of dataset 'images/noise' in 'test_data.h5'."
+uv run sfa_hdf5_ollama.py data "What datasets exist in 'text_data/' in test_data.h5 and how do they compare to 'text_data/fruits'?"
 ```
-- **Purpose**: Tests slicing a 2D image dataset, assuming noise is a 2D array (e.g., a small image).
+Purpose: Combines list_datasets and compare_datasets in a single optimized run, leveraging parallelism.
 
-
-```bash
-uv run sfa_hdf5_ollama.py data "what other datasets do exist in 'text_data/' in 'test_data.h5' and how do they compare to 'text_data/fruits?"
-```
+## Notes on Usage
+Assumptions: These queries assume test_data.h5 contains the same structure as in your original tests (e.g., text_data/fruits, numerical_data/integers_1d, etc.). Adjust paths if your file differs.
