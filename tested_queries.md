@@ -122,3 +122,8 @@ uv run sfa_hdf5_ollama.py data "Read dataset 'numerical_data/fake_data' in 'test
 uv run sfa_hdf5_ollama.py data "Read rows 0 to 10 and columns 0 to 10 of dataset 'images/noise' in 'test_data.h5'."
 ```
 - **Purpose**: Tests slicing a 2D image dataset, assuming noise is a 2D array (e.g., a small image).
+
+
+```bash
+uv run sfa_hdf5_ollama.py data "what other datasets do exist in 'text_data/' in 'test_data.h5' and how do they compare to 'text_data/fruits?"
+```

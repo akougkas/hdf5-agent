@@ -8,6 +8,7 @@ a local Language Model (LLM) served by Ollama. The agent provides functionality 
 - Retrieve dataset information, shapes, data types, and attributes
 - Read and analyze data slices
 - Generate dataset summaries
+- Compare datasets across files
 
 The agent uses a tool-based architecture where the LLM can invoke specific functions
 to interact with HDF5 files based on natural language queries.
@@ -94,6 +95,16 @@ class ReadDatasetDataArgs(BaseModel):
     dataset_path: str = Field(..., description="Path to the dataset within the file")
     slice_start: Optional[List[int]] = Field(None, description="Start indices for slicing (e.g., [0] or [0, 0])")
     slice_end: Optional[List[int]] = Field(None, description="End indices for slicing (e.g., [10] or [5, 5])")
+
+class SummarizeDatasetArgs(BaseModel):
+    file_path: str = Field(..., description="Relative path to the HDF5 file")
+    dataset_path: str = Field(..., description="Path to the dataset within the file")
+
+class CompareDatasetsArgs(BaseModel):
+    file_path1: str = Field(..., description="Relative path to the first HDF5 file")
+    dataset_path1: str = Field(..., description="Path to the first dataset")
+    file_path2: str = Field(..., description="Relative path to the second HDF5 file")
+    dataset_path2: str = Field(..., description="Path to the second dataset")
 
 class ListAllDatasetsArgs(BaseModel):
     file_path: str = Field(..., description="Relative path to the HDF5 file")
@@ -299,6 +310,134 @@ def read_dataset_data(directory_path: str, file_path: str, dataset_path: str, sl
     METRICS["tool_calls"]["read_dataset_data"]["time"] += duration
     return result
 
+def summarize_dataset(directory_path: str, file_path: str, dataset_path: str) -> Dict[str, Any]:
+    """Provide a summary of a dataset's contents, including statistical analysis for numerical data or value summaries for strings."""
+    start_time = time.time()
+    full_path = os.path.join(directory_path, file_path)
+    if not os.path.exists(full_path):
+        result = {"error": f"File not found: {file_path}"}
+    else:
+        try:
+            with h5py.File(full_path, 'r') as f:
+                if dataset_path not in f:
+                    result = {"error": f"Dataset not found: {dataset_path}"}
+                elif not isinstance(f[dataset_path], h5py.Dataset):
+                    result = {"error": f"Not a dataset: {dataset_path}"}
+                else:
+                    ds = f[dataset_path]
+                    total_size = np.prod(ds.shape)
+                    
+                    if total_size == 0:
+                        result = {"dataset": dataset_path, "summary": "Dataset is empty", "shape": list(ds.shape), "dtype": str(ds.dtype)}
+                    elif total_size > MAX_SLICE_SIZE:
+                        result = {"error": f"Dataset size ({total_size} elements) exceeds MAX_SLICE_SIZE ({MAX_SLICE_SIZE}) for summarization"}
+                    else:
+                        data = ds[()]
+                        summary = {}
+                        summary["shape"] = list(ds.shape)
+                        summary["dtype"] = str(ds.dtype)
+                        
+                        if np.issubdtype(ds.dtype, np.number):
+                            # Numerical data summary
+                            summary["count"] = int(total_size)
+                            summary["min"] = float(np.min(data))
+                            summary["max"] = float(np.max(data))
+                            summary["mean"] = float(np.mean(data))
+                            summary["median"] = float(np.median(data))
+                            summary["std"] = float(np.std(data))
+                            summary["quantiles"] = {
+                                "25%": float(np.percentile(data, 25)),
+                                "50%": float(np.percentile(data, 50)),
+                                "75%": float(np.percentile(data, 75))
+                            }
+                        elif ds.dtype.type is np.str_ or ds.dtype.type is np.bytes_:
+                            # String data summary
+                            data = data.astype(str) if ds.dtype.type is np.bytes_ else data
+                            unique_values, counts = np.unique(data, return_counts=True)
+                            summary["count"] = int(total_size)
+                            summary["unique_values"] = int(len(unique_values))
+                            top_indices = np.argsort(-counts)[:5]
+                            summary["most_frequent"] = {str(unique_values[i]): int(counts[i]) for i in top_indices}
+                            summary["sample"] = [str(data.flat[i]) for i in range(min(5, total_size))]
+                        else:
+                            # Generic summary for other types
+                            summary["sample"] = str(data)[:1000]  # Truncate for brevity
+                        
+                        result = {"dataset": dataset_path, "summary": summary}
+        except Exception as e:
+            result = {"error": f"Error summarizing dataset: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["summarize_dataset"] = METRICS["tool_calls"].get("summarize_dataset", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["summarize_dataset"]["count"] += 1
+    METRICS["tool_calls"]["summarize_dataset"]["time"] += duration
+    return result
+
+def compare_datasets(directory_path: str, file_path1: str, dataset_path1: str, file_path2: str, dataset_path2: str) -> Dict[str, Any]:
+    """Compare two datasets from potentially different HDF5 files for equality or differences."""
+    start_time = time.time()
+    full_path1 = os.path.join(directory_path, file_path1)
+    full_path2 = os.path.join(directory_path, file_path2)
+    
+    if not os.path.exists(full_path1):
+        result = {"error": f"File not found: {file_path1}"}
+    elif not os.path.exists(full_path2):
+        result = {"error": f"File not found: {file_path2}"}
+    else:
+        try:
+            with h5py.File(full_path1, 'r') as f1, h5py.File(full_path2, 'r') as f2:
+                if dataset_path1 not in f1:
+                    result = {"error": f"Dataset not found: {dataset_path1} in {file_path1}"}
+                elif not isinstance(f1[dataset_path1], h5py.Dataset):
+                    result = {"error": f"Not a dataset: {dataset_path1} in {file_path1}"}
+                elif dataset_path2 not in f2:
+                    result = {"error": f"Dataset not found: {dataset_path2} in {file_path2}"}
+                elif not isinstance(f2[dataset_path2], h5py.Dataset):
+                    result = {"error": f"Not a dataset: {dataset_path2} in {file_path2}"}
+                else:
+                    ds1 = f1[dataset_path1]
+                    ds2 = f2[dataset_path2]
+                    size1 = np.prod(ds1.shape)
+                    size2 = np.prod(ds2.shape)
+                    
+                    if size1 > MAX_SLICE_SIZE or size2 > MAX_SLICE_SIZE:
+                        result = {"error": f"Dataset size exceeds MAX_SLICE_SIZE ({MAX_SLICE_SIZE}): {size1} or {size2} elements"}
+                    elif ds1.shape != ds2.shape:
+                        result = {
+                            "dataset1": {"file": file_path1, "path": dataset_path1, "shape": list(ds1.shape), "dtype": str(ds1.dtype)},
+                            "dataset2": {"file": file_path2, "path": dataset_path2, "shape": list(ds2.shape), "dtype": str(ds2.dtype)},
+                            "identical": False,
+                            "difference": "Datasets have different shapes"
+                        }
+                    elif ds1.dtype != ds2.dtype:
+                        result = {
+                            "dataset1": {"file": file_path1, "path": dataset_path1, "shape": list(ds1.shape), "dtype": str(ds1.dtype)},
+                            "dataset2": {"file": file_path2, "path": dataset_path2, "shape": list(ds2.shape), "dtype": str(ds2.dtype)},
+                            "identical": False,
+                            "difference": "Datasets have different data types"
+                        }
+                    else:
+                        data1 = ds1[()]
+                        data2 = ds2[()]
+                        if np.issubdtype(ds1.dtype, np.number):
+                            identical = np.allclose(data1, data2, equal_nan=True)
+                            differences = "Values are approximately equal" if identical else "Numerical differences found"
+                        else:
+                            identical = np.array_equal(data1, data2)
+                            differences = "Values are identical" if identical else "Values differ"
+                        result = {
+                            "dataset1": {"file": file_path1, "path": dataset_path1, "shape": list(ds1.shape), "dtype": str(ds1.dtype)},
+                            "dataset2": {"file": file_path2, "path": dataset_path2, "shape": list(ds2.shape), "dtype": str(ds2.dtype)},
+                            "identical": identical,
+                            "difference": differences
+                        }
+        except Exception as e:
+            result = {"error": f"Error comparing datasets: {str(e)}"}
+    duration = time.time() - start_time
+    METRICS["tool_calls"]["compare_datasets"] = METRICS["tool_calls"].get("compare_datasets", {"count": 0, "time": 0.0})
+    METRICS["tool_calls"]["compare_datasets"]["count"] += 1
+    METRICS["tool_calls"]["compare_datasets"]["time"] += duration
+    return result
+
 def list_all_datasets(directory_path: str, file_path: str) -> Dict[str, Any]:
     """List all datasets in the HDF5 file, grouped by their parent groups."""
     start_time = time.time()
@@ -361,6 +500,8 @@ tool_registry = {
     "get_file_attribute": {"func": get_file_attribute, "args_model": GetFileAttributeArgs},
     "get_dataset_info": {"func": get_dataset_info, "args_model": GetDatasetInfoArgs},
     "read_dataset_data": {"func": read_dataset_data, "args_model": ReadDatasetDataArgs},
+    "summarize_dataset": {"func": summarize_dataset, "args_model": SummarizeDatasetArgs},
+    "compare_datasets": {"func": compare_datasets, "args_model": CompareDatasetsArgs},
     "list_all_datasets": {"func": list_all_datasets, "args_model": ListAllDatasetsArgs},
     "get_file_metadata": {"func": get_file_metadata, "args_model": GetFileMetadataArgs}
 }
@@ -389,12 +530,14 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
                     "- get_file_attribute: Get a file attribute (arguments: 'file_path', 'attribute_name')\n"
                     "- get_dataset_info: Get dataset metadata (arguments: 'file_path', 'dataset_path')\n"
                     "- read_dataset_data: Read dataset data (arguments: 'file_path', 'dataset_path', optional 'slice_start' and 'slice_end' as lists; limited to {MAX_SLICE_SIZE} elements)\n"
+                    "- summarize_dataset: Summarize dataset contents (arguments: 'file_path', 'dataset_path'; provides statistics for numbers or value counts for strings; limited to {MAX_SLICE_SIZE} elements)\n"
+                    "- compare_datasets: Compare two datasets for equality or differences (arguments: 'file_path1', 'dataset_path1', 'file_path2', 'dataset_path2'; limited to {MAX_SLICE_SIZE} elements per dataset)\n"
                     "- list_all_datasets: List all datasets grouped by parent groups (argument: 'file_path')\n"
                     "- get_file_metadata: Get file metadata like size and creation time (argument: 'file_path')\n\n"
                     "Rules:\n"
                     "- For multi-step queries, execute tools sequentially, accumulating results in each step.\n"
                     "- Use previous tool results (from 'accumulated_results') to inform subsequent tool calls.\n"
-                    "- For 'read_dataset_data', 'slice_start' and 'slice_end' are optional lists matching dataset dimensions.\n"
+                    "- For 'read_dataset_data', 'summarize_dataset', and 'compare_datasets', respect the {MAX_SLICE_SIZE} element limit.\n"
                     "- When all parts of the query are resolved, return {\"done\": true, \"results\": <accumulated_results>}.\n"
                     "- Maintain state across iterations using 'accumulated_results'.\n\n"
                     "Examples:\n"
@@ -402,6 +545,9 @@ async def processing_agent(directory_path: str, query: str, client: ollama.Async
                     "  Step 1: {\"tool_call\": {\"name\": \"list_groups\", \"arguments\": {\"file_path\": \"test.h5\"}}}\n"
                     "  Step 2: {\"tool_call\": {\"name\": \"list_datasets\", \"arguments\": {\"file_path\": \"test.h5\", \"group_path\": \"group1\"}}}\n"
                     "  Step 3: {\"done\": true, \"results\": {\"groups\": {...}, \"datasets\": {...}}}\n"
+                    "- Query: 'Compare dataset data in test.h5 with data_backup in backup.h5'\n"
+                    "  Step 1: {\"tool_call\": {\"name\": \"compare_datasets\", \"arguments\": {\"file_path1\": \"test.h5\", \"dataset_path1\": \"data\", \"file_path2\": \"backup.h5\", \"dataset_path2\": \"data_backup\"}}}\n"
+                    "  Step 2: {\"done\": true, \"results\": {\"compare_datasets\": {...}}}\n"
                 )
             }
         ]
@@ -587,5 +733,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
