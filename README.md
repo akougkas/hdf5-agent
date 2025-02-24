@@ -98,6 +98,144 @@ uv run sfa_hdf5_ollama.py data
 ```
 Type your query at the `HDF5>` prompt. Use `exit` to quit, `history` to view past queries, or a number to rerun a previous query.
 
+**Example Interactive Session:**
+
+```
+hdf5-agent
+uv run sfa_hdf5_ollama.py data
+Initializing Ollama...
+✓ Ollama ready :)
+Interactive mode: 'exit' to quit, 'history' for past queries, or number to rerun
+HDF5> how many groups are there in teh test_data.h5 file?         
+Processing query...
+
+─ You asked: how many groups are there in teh test_data.h5 file? ─
+
+In the test_data.h5 file located at /mnt/nfs/dev/single-file-agents/hdf5-agent/data, there are a total of 9 groups.                                                                                               
+
+If you need any more details about these groups or anything else regarding this HDF5 file, feel free to ask!                                                                                                      
+HDF5> show me all groups
+Processing query...
+
+─ You asked: show me all groups ─
+
+It seems like there was an issue processing your request because it wasn't clear whether you were asking about a specific directory or file for listing all HDF5 files and their respective groups.               
+
+To help clarify:                                                                                                                                                                                                  
+
+ • If you have a particular HDF5 file in mind (like test_data.h5), I can assist with details about that file, such as the number of groups within it.                                                             
+ • For example, from our recent interactions, I noted that in the test_data.h5 file located at /mnt/nfs/dev/single-file-agents/hdf5-agent/data, there are a total of 9 groups.                                    
+
+If you'd like to proceed with details on specific files or need assistance listing available files within a directory, just let me know!                                                                          
+HDF5> show me all groups in 'test_data.h5' file?
+Processing query...
+
+─ You asked: show me all groups in 'test_data.h5' file? ─
+
+Certainly! Here's the information regarding the groups in the test_data.h5 file:                                                                                                                                  
+
+                                                                                              Groups in test_data.h5                                                                                              
+
+In the HDF5 file named test_data.h5, located at /mnt/nfs/dev/single-file-agents/hdf5-agent/data, you will find the following groups:                                                                              
+
+ • Root Group: /                                                                                                                                                                                                  
+ • Image Data Group: /images                                                                                                                                                                                      
+ • Nested Groups:                                                                                                                                                                                                 
+    • /nested                                                                                                                                                                                                     
+    • /nested/level1                                                                                                                                                                                              
+    • /nested/level1/level2                                                                                                                                                                                       
+    • /nested/level1/level2/level3                                                                                                                                                                                
+ • Numerical Data Group: /numerical_data                                                                                                                                                                          
+ • Text Data Group: /text_data                                                                                                                                                                                    
+ • Time Series Data Group: /timeseries                                                                                                                                                                            
+
+In total, there are 9 groups within this file.                                                                                                                                                                    
+
+If you need more details about any specific group or have other questions regarding the test_data.h5 file, feel free to ask!                                                                                      
+HDF5> summarize the dataset '/timeseries/temperature' in the file 'test_data.h5'
+Processing query...
+
+─ You asked: summarize the dataset '/timeseries/temperature' in the file 'test_data.h5' ─
+
+                                                                         Summary of Dataset /timeseries/temperature in File test_data.h5                                                                          
+
+The dataset /timeseries/temperature contains temperature data recorded over a period. Here's a detailed summary based on the processing results:                                                                  
+
+                                                                                                    Metadata:                                                                                                     
+
+ • Shape: [31]                                                                                                                                                                                                    
+    • This indicates that there are 31 elements (data points) in this dataset.                                                                                                                                    
+ • Data Type: float64                                                                                                                                                                                             
+    • Each element is represented as a double-precision floating-point number.                                                                                                                                    
+ • Size: 248 bytes                                                                                                                                                                                                
+    • The total size of the data in memory is 248 bytes.                                                                                                                                                          
+ • Chunks: None                                                                                                                                                                                                   
+    • The dataset is stored without chunking, meaning it's read or written in one piece rather than divided into smaller chunks.                                                                                  
+ • Compression: None                                                                                                                                                                                              
+    • No compression technique has been applied to this dataset.                                                                                                                                                  
+ • Fill Value: 0.0                                                                                                                                                                                                
+    • A fill value of 0.0 is specified for missing data points.                                                                                                                                                   
+ • Attributes:                                                                                                                                                                                                    
+    • Sampling Rate: "1 day"                                                                                                                                                                                      
+       • Data is sampled daily.                                                                                                                                                                                   
+    • Start Date: "2024-01-01"                                                                                                                                                                                    
+       • The first recorded date corresponds to January 1, 2024.                                                                                                                                                  
+    • Unit: "Celsius"                                                                                                                                                                                             
+       • Temperature values are given in degrees Celsius.                                                                                                                                                         
+
+                                                                                                    Sampling:                                                                                                     
+
+ • Sampled: False                                                                                                                                                                                                 
+    • No subsampling of data points has been performed for analysis.                                                                                                                                              
+ • Sample Shape: [31]                                                                                                                                                                                             
+    • The shape is consistent with the original dataset, as no sampling was applied.                                                                                                                              
+
+                                                                                                Numeric Analysis:                                                                                                 
+
+ • Minimum Value: 13.484297667432232                                                                                                                                                                              
+    • The lowest temperature recorded in this dataset.                                                                                                                                                            
+ • Maximum Value: 25.91422947866164                                                                                                                                                                               
+    • The highest temperature recorded.                                                                                                                                                                           
+ • Mean (Average): 20.03770084486556                                                                                                                                                                              
+    • The average temperature over the sampled period.                                                                                                                                                            
+ • Standard Deviation: 3.6640272797334172                                                                                                                                                                         
+    • A measure of variation or dispersion from the mean.                                                                                                                                                         
+ • NaN Count: 0                                                                                                                                                                                                   
+    • There are no missing values (NaNs) in the dataset.                                                                                                                                                          
+ • Infinity Count: 0                                                                                                                                                                                              
+    • No infinite values are present.                                                                                                                                                                             
+ • Zero Count: 0                                                                                                                                                                                                  
+    • No zero values recorded in this dataset.                                                                                                                                                                    
+ • Count: 31                                                                                                                                                                                                      
+    • The total number of data points is 31, matching the shape.                                                                                                                                                  
+
+If you have any further questions or need more details about the dataset or other aspects of the HDF5 file, feel free to ask!                                                                                     
+HDF5> which group is the most interesting?
+Processing query...
+
+─ You asked: which group is the most interesting? ─
+
+The query "which group is the most interesting?" in the context of an HDF5 file requires specific criteria to be defined because what makes a group "interesting" can vary greatly depending on personal or       
+research interests.                                                                                                                                                                                               
+
+Explanation of the Error:                                                                                                                                                                                         
+
+ • Subjectivity: The term "most interesting" is subjective and lacks clear, measurable criteria. Without additional information about what characteristics make a group stand out (e.g., specific datasets,       
+   metadata, attributes), it's not possible to determine which group might be considered most interesting.                                                                                                        
+ • Request for Details: To proceed with such a query, you would need to specify the file path and provide particular features or criteria that define "interesting" in this context.                              
+
+Assistance Offered:                                                                                                                                                                                               
+
+I can assist by providing details about specific files, groups, datasets, or metadata. For example:                                                                                                               
+
+ 1 If you have a particular HDF5 file, like test_data.h5, I can list all the groups within it.                                                                                                                    
+ 2 You could specify certain attributes or characteristics (e.g., large datasets, unique metadata) to help identify interesting groups.                                                                           
+
+If you provide more details about what makes a group "interesting," I'll be happy to help analyze the available data accordingly. For instance, I have information on the structure and content of test_data.h5 if
+that helps in narrowing down your query.                                                                                                                                                                          
+HDF5> ^ exit
+```
+
 ## Test Cases
 
 ### Basic Exploration
